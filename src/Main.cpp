@@ -1,4 +1,6 @@
 #include <iostream>
+#include <thread>
+#include <chrono>
 
 #include "Common.h"
 
@@ -7,6 +9,37 @@
 #include "Sphere.h"
 #include "Camera.h"
 #include "Material.h"
+
+#define MT 0
+
+class Timer
+{
+public: 
+    Timer()
+    {
+        m_StartTimepoint = std::chrono::high_resolution_clock::now();
+    }
+
+    ~Timer()
+    {
+        Stop();
+    }
+
+    void Stop()
+    {
+        auto endTimepoint = std::chrono::high_resolution_clock::now();
+
+        auto start = std::chrono::time_point_cast<std::chrono::seconds>(m_StartTimepoint).time_since_epoch().count();
+        auto end = std::chrono::time_point_cast<std::chrono::seconds>(endTimepoint).time_since_epoch().count();
+
+        auto seconds = end - start;
+
+        std::cerr << "Seconds elapsed:" << seconds <<std::endl;
+    }
+
+private:
+    std::chrono::time_point<std::chrono::high_resolution_clock> m_StartTimepoint;
+};
 
 
 Color ray_color(const Ray& ray, const Hittable& world, int depth)
@@ -31,6 +64,10 @@ Color ray_color(const Ray& ray, const Hittable& world, int depth)
 }
 
 Hittable_List random_scene();
+
+#if MT
+void calculateColor(Color* arr, int iteration, int num_of_threads, int lines_per_thread, int image_width, int image_height, int max_depth, int samples_per_pixel, const Camera& cam, const Hittable_List& world);
+#endif
 
 int main()
 {
@@ -57,14 +94,41 @@ int main()
     //Render
     std::cout << "P3\n" << image_width << ' ' << image_height << "\n255\n";
 
-    for (int j = image_height - 1; j >= 0; --j) 
+    //Timer for measuring performance
+    Timer timer;
+
+#if MT
+    const int num_of_threads = std::thread::hardware_concurrency();
+    const int lines_per_thread = static_cast<int>(image_height / num_of_threads);
+    Color* ColorArr = new Color[image_height*image_width];
+    
+    std::thread* threads = new std::thread[num_of_threads];
+    for (int i = 0; i < num_of_threads; i++)
+    {
+        threads[i] = std::thread(calculateColor, ColorArr, i, num_of_threads, lines_per_thread, image_width, image_height, max_depth, samples_per_pixel, cam, world);
+    }
+    
+    for (int i = 0; i < num_of_threads; i++)
+    {
+        threads[i].join();
+    }
+
+    for (int i = 0; i < image_width * image_height; i++)
+    {
+        write_color(std::cout, ColorArr[i], samples_per_pixel);
+    }
+#else
+    for (int j = image_height - 1; j >= 0; --j)
     {
         std::cerr << "\rScanlines remaining: " << j << ' ' << std::flush;
+
+
         for (int i = 0; i < image_width; ++i) 
         {
             Color pixel_color(0, 0, 0);
             for (int s = 0; s < samples_per_pixel; ++s)
             {
+
                 float h = (i + random_float()) / (image_width - 1);
                 float v = (j + random_float()) / (image_height - 1);
                 Ray ray = cam.get_ray(h, v);
@@ -73,9 +137,36 @@ int main()
             write_color(std::cout, pixel_color, samples_per_pixel);
         }
     }
-
+#endif // MT
     std::cerr << "\nDone.\n";
 }
+
+#if MT
+void calculateColor(Color* arr, int iteration, int num_of_threads, int lines_per_thread, int image_width, int image_height, int max_depth, int samples_per_pixel, const Camera& cam, const Hittable_List& world)
+{
+    int upper_limit = image_height - iteration * lines_per_thread - 1;
+    int lower_limit = image_height - (iteration + 1) * lines_per_thread;
+    for (int j = upper_limit; j >= lower_limit; --j)
+    {
+        std::cerr << "Lines in thread " << iteration << " remaining: " << j - (image_height - (iteration + 1) * lines_per_thread) << std::endl;
+        for (int i = 0; i < image_width; ++i)
+        {
+            Color pixel_color(0, 0, 0);
+            for (int s = 0; s < samples_per_pixel; ++s)
+            {
+
+                float h = (i + random_float()) / (image_width - 1);
+                float v = (j + random_float()) / (image_height - 1);
+                Ray ray = cam.get_ray(h, v);
+                pixel_color = pixel_color + ray_color(ray, world, max_depth);
+            }
+            int element_number = i + image_width * (image_height - j - 1);
+            arr[element_number] = pixel_color;
+
+        }
+    }
+}
+#endif // MT
 
 Hittable_List random_scene()
 {
